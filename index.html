@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Expense Tracker — Firebase Sync</title>
+<style>
+  :root{--bg:#f4f6f8;--card:#fff;--muted:#666}
+  body{font-family:Inter,Segoe UI,Arial; margin:18px; background:var(--bg); color:#111}
+  header {display:flex;align-items:center;justify-content:space-between;gap:12px}
+  h1{background:#0b5ed7;color:#fff;padding:10px 14px;border-radius:6px;display:inline-block;margin:0}
+  .grid{display:grid;grid-template-columns:1fr 420px;gap:14px;margin-top:14px}
+  .card{background:var(--card);padding:12px;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,.06)}
+  label{display:block;font-size:13px;margin-top:8px;color:var(--muted)}
+  input[type="text"], input[type="number"], input[type="datetime-local"], select {
+    width:100%;padding:8px;margin-top:6px;border:1px solid #d6dce3;border-radius:6px;
+  }
+  button{margin-top:10px;padding:8px 10px;border-radius:6px;border:0;background:#0b5ed7;color:white;cursor:pointer}
+  .small{font-size:13px;color:var(--muted)}
+  table{width:100%;border-collapse:collapse;margin-top:10px}
+  th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;font-size:13px}
+  th{background:#f8fbff}
+  .summary-row{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px}
+  .pill{background:#f1f5ff;padding:8px 10px;border-radius:8px;font-weight:600}
+  .top-badge{background:#fff3cd;color:#856404;padding:6px;border-radius:6px;margin-top:8px;display:inline-block}
+  canvas{width:100%!important;height:220px!important;display:block;margin-top:8px}
+  .legend {margin-top:6px;font-size:13px;}
+  .legend-item{display:flex;align-items:center;margin-bottom:4px;}
+  .legend-box{width:14px;height:14px;margin-right:6px;border-radius:3px;}
+  .user-row{display:flex;gap:8px;align-items:center}
+  .btn-quiet{background:#6c757d;color:white}
+  #status {font-size:13px;color:#555;margin-left:8px}
+  @media(max-width:860px){ .grid{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Expense Tracker</h1>
+    <div class="small">Cloud-sync with Firebase — sign in to sync across devices</div>
+  </div>
+  <div class="user-row card" style="padding:10px">
+    <div id="userArea">
+      <button id="signInBtn" onclick="signIn()">Sign in with Google</button>
+    </div>
+    <div id="status">Not signed in</div>
+  </div>
+</header>
+
+<div class="grid">
+  <!-- LEFT: INPUTS + LOG -->
+  <div class="card" id="mainCard">
+    <h3>Add / Manage Categories</h3>
+
+    <label>New Income Category</label>
+    <input id="newIncomeCategory" type="text" placeholder="e.g., Freelance">
+    <button onclick="addCategory('income')">Add Income Category</button>
+
+    <label style="margin-top:10px">New Expense Category</label>
+    <input id="newExpenseCategory" type="text" placeholder="e.g., Groceries">
+    <button onclick="addCategory('expense')">Add Expense Category</button>
+
+    <hr>
+
+    <h3>Add Transaction</h3>
+    <label>Type</label>
+    <select id="txType" onchange="refreshCategorySelects()">
+      <option value="Expense">Expense</option>
+      <option value="Income">Income</option>
+    </select>
+
+    <label>Category</label>
+    <select id="txCategory"></select>
+
+    <div style="display:flex;gap:8px">
+      <div style="flex:1">
+        <label>Amount</label>
+        <input id="txAmount" type="number" placeholder="100.00" step="0.01">
+      </div>
+      <div style="width:220px">
+        <label>Date & Time</label>
+        <input id="txDate" type="datetime-local">
+      </div>
+    </div>
+
+    <label>Note</label>
+    <input id="txNote" type="text" placeholder="optional">
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button onclick="addTransaction()">Add Transaction</button>
+      <button onclick="exportCSV()" style="background:#198754">Export CSV</button>
+      <button onclick="clearLocal()" style="background:#dc3545">Clear Local</button>
+    </div>
+
+    <hr>
+
+    <h3>Summary</h3>
+    <div class="summary-row">
+      <div class="pill">Income: <span id="totalIncome">0</span></div>
+      <div class="pill">Expense: <span id="totalExpense">0</span></div>
+      <div class="pill">Balance: <span id="balance">0</span></div>
+    </div>
+
+    <p class="small">Top Income: <span id="topIncome" class="top-badge">-</span></p>
+    <p class="small">Top Expense: <span id="topExpense" class="top-badge">-</span></p>
+
+    <hr>
+
+    <h3>Transaction Log</h3>
+    <div class="small">Most recent first. Changes auto-sync across devices.</div>
+    <table id="txTable" aria-live="polite">
+      <thead><tr><th>Type</th><th>Category</th><th>Amount</th><th>Date & time</th><th>Note</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- RIGHT: CHARTS -->
+  <div class="card">
+    <h3>Charts</h3>
+
+    <strong>Income Breakdown</strong>
+    <canvas id="incomeCanvas"></canvas>
+    <div id="incomeLegend" class="legend"></div>
+
+    <strong style="margin-top:10px;display:block">Expense Breakdown</strong>
+    <canvas id="expenseCanvas"></canvas>
+    <div id="expenseLegend" class="legend"></div>
+  </div>
+</div>
+
+<!-- Firebase SDKs (modules) -->
+<script type="module">
+  // ---------- YOUR FIREBASE CONFIG (from earlier) ----------
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-app.js";
+  import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-auth.js";
+  import { getFirestore, doc, setDoc, getDoc, onSnapshot, enableIndexedDbPersistence, updateDoc } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDsNmjIXjrS7RnFHe3c2t8r3dVgVNgZBAc",
+    authDomain: "expense-tracker-5a003.firebaseapp.com",
+    projectId: "expense-tracker-5a003",
+    storageBucket: "expense-tracker-5a003.firebasestorage.app",
+    messagingSenderId: "857816952226",
+    appId: "1:857816952226:web:27e965a1ef7bcfcafe16fb",
+    measurementId: "G-F1JLDR4FHJ"
+  };
+
+  // Initialize Firebase
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  // Enable offline persistence (best effort)
+  try { enableIndexedDbPersistence(db); } catch(e){ /* ignore if not available */ }
+
+  // ---------- App state ----------
+  // Local mirror of cloud state
+  let localState = {
+    categories: { income: ["Salary","Bank Interest"], expense: ["Fuel","Medicine","House Rent","Card Bill","Food"] },
+    transactions: [], // objects: {id, type, category, amount, datetime, note}
+    lastUpdated: 0
+  };
+
+  // track last local write to avoid echoing
+  let lastLocalWriteTimestamp = 0;
+  let unsubscribeSnapshot = null;
+  let currentUser = null;
+
+  // ---------- Auth UI ----------
+  const signInBtn = document.getElementById("signInBtn");
+  const userArea = document.getElementById("userArea");
+  const statusEl = document.getElementById("status");
+
+  async function signIn(){
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+      // onAuthStateChanged will handle the rest
+    } catch(err){
+      alert("Sign-in failed: " + (err.message||err));
+      console.error(err);
+    }
+  }
+
+  async function signOutUser(){
+    if(!currentUser) return;
+    await signOut(auth);
+  }
+
+  onAuthStateChanged(auth, async user => {
+    currentUser = user;
+    if(user){
+      statusEl.textContent = "Signed in: " + (user.displayName || user.email);
+      // replace sign in with user info + logout
+      userArea.innerHTML = `
+        <div style="display:flex;align-items:center;gap:8px">
+          <img src="${user.photoURL||''}" style="width:36px;height:36px;border-radius:50%" alt="">
+          <div style="display:flex;flex-direction:column">
+            <strong style="font-size:14px">${user.displayName||user.email}</strong>
+            <small style="color:#666">${user.email}</small>
+          </div>
+        </div>
+        <div style="margin-left:8px">
+          <button id="signOutBtn" class="btn-quiet" style="background:#6c757d" onclick="signOutUser()">Sign Out</button>
+        </div>
+      `;
+      attachSnapshot();
+    } else {
+      statusEl.textContent = "Not signed in";
+      userArea.innerHTML = `<button id="signInBtn" onclick="signIn()">Sign in with Google</button>`;
+      detachSnapshot();
+      // reset local mirror to defaults
+      localState = {
+        categories: { income: ["Salary","Bank Interest"], expense: ["Fuel","Medicine","House Rent","Card Bill","Food"] },
+        transactions: [],
+        lastUpdated: 0
+      };
+      renderAll();
+    }
+  });
+
+  // expose signIn and signOut to window so HTML buttons work
+  window.signIn = signIn;
+  window.signOutUser = signOutUser;
+
+  // ---------- Firestore path ----------
+  function userDocRef(uid){
+    // one doc per user storing whole app state. Path: users/{uid}/state
+    return doc(db, "users", uid, "private", "state");
+  }
+
+  // Listen to remote changes
+  function attachSnapshot(){
+    if(!currentUser) return;
+    const ref = userDocRef(currentUser.uid);
+    // unsubscribe previous
+    if(unsubscribeSnapshot) unsubscribeSnapshot();
+    unsubscribeSnapshot = onSnapshot(ref, snap => {
+      if(!snap.exists()){
+        // create doc with localState (first time)
+        saveStateToFirestore(localState);
+        return;
+      }
+      const data = snap.data();
+      // detect whether this update is our own lastLocalWrite
+      const remoteLast = data.lastUpdated || 0;
+      if(remoteLast === lastLocalWriteTimestamp){
+        // it's the same write we just made -> ignore applying (already local)
+        // But still ensure UI shows exact saved state
+        // apply anyway to keep canonical representation
+      }
+      // update local mirror with remote state (last-write-wins)
+      localState = {
+        categories: data.categories || localState.categories,
+        transactions: data.transactions || [],
+        lastUpdated: remoteLast
+      };
+      renderAll();
+    }, err=>{
+      console.error("Snapshot error:", err);
+    });
+  }
+
+  function detachSnapshot(){
+    if(unsubscribeSnapshot) { unsubscribeSnapshot(); unsubscribeSnapshot = null; }
+  }
+
+  // Save local state to Firestore (write-through)
+  async function saveStateToFirestore(stateToSave){
+    if(!currentUser) return console.warn("Not signed in; not saving.");
+    const ref = userDocRef(currentUser.uid);
+    const payload = {
+      categories: stateToSave.categories,
+      transactions: stateToSave.transactions,
+      lastUpdated: Date.now()
+    };
+    lastLocalWriteTimestamp = payload.lastUpdated;
+    try {
+      await setDoc(ref, payload, { merge: true });
+      // saved
+    } catch(err){
+      console.error("Error saving to Firestore:", err);
+      alert("Error saving data. Check console.");
+    }
+  }
+
+  // ---------- UI / state manipulation ----------
+  function refreshCategorySelects(){
+    const sel = document.getElementById("txCategory");
+    sel.innerHTML = "";
+    const type = document.getElementById("txType").value;
+    const list = localState.categories[type.toLowerCase()] || [];
+    list.forEach(c => {
+      const o = document.createElement("option"); o.value = c; o.textContent = c; sel.appendChild(o);
+    });
+  }
+
+  window.refreshCategorySelects = refreshCategorySelects;
+
+  function addCategory(kind){
+    const input = kind==="income" ? document.getElementById("newIncomeCategory") : document.getElementById("newExpenseCategory");
+    const val = input.value.trim();
+    if(!val) return alert("Enter a category name");
+    const list = localState.categories[kind];
+    if(list.includes(val)) { alert("Category already exists"); input.value=""; return; }
+    list.push(val);
+    input.value = "";
+    localState.lastUpdated = Date.now();
+    saveStateToFirestore(localState);
+    renderAll();
+  }
+
+  window.addCategory = addCategory;
+
+  function addTransaction(){
+    const type = document.getElementById("txType").value;
+    const category = document.getElementById("txCategory").value;
+    const amount = parseFloat(document.getElementById("txAmount").value);
+    const datetime = document.getElementById("txDate").value;
+    const note = document.getElementById("txNote").value.trim();
+
+    if(!category || !datetime || !amount || isNaN(amount)) return alert("Enter Type, Category, Amount and Date & Time.");
+
+    const tx = { id: Date.now() + Math.floor(Math.random()*9999), type, category, amount: Number(amount), datetime, note };
+    localState.transactions.push(tx);
+    localState.lastUpdated = Date.now();
+    saveStateToFirestore(localState);
+    document.getElementById("txAmount").value=""; document.getElementById("txNote").value=""; document.getElementById("txDate").value="";
+    renderAll();
+  }
+
+  window.addTransaction = addTransaction;
+
+  function deleteTx(id){
+    if(!confirm("Delete this entry?")) return;
+    localState.transactions = localState.transactions.filter(t=>t.id !== id);
+    localState.lastUpdated = Date.now();
+    saveStateToFirestore(localState);
+    renderAll();
+  }
+  window.deleteTx = deleteTx;
+
+  function clearLocal(){
+    if(!confirm("Clear all data for this account? This will delete everything in cloud for your account.")) return;
+    localState = {
+      categories: { income: [], expense: [] },
+      transactions: [],
+      lastUpdated: Date.now()
+    };
+    saveStateToFirestore(localState);
+    renderAll();
+  }
+
+  // CSV export (client-side)
+  function exportCSV(){
+    const rows = [["Type","Category","Amount","DateTime","Note"]];
+    // sort newest first
+    localState.transactions.slice().sort((a,b)=> new Date(b.datetime)-new Date(a.datetime)).forEach(t=>{
+      rows.push([t.type, t.category, t.amount, t.datetime, (t.note||"")]);
+    });
+    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], {type:"text/csv"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "ExpenseData.csv";
+    a.click();
+  }
+  window.exportCSV = exportCSV;
+
+  // ---------- rendering & charts ----------
+  function renderAll(){
+    refreshCategorySelects();
+    renderTable();
+    renderSummary();
+    drawPie("incomeCanvas", aggregateBy("Income"), "incomeLegend");
+    drawPie("expenseCanvas", aggregateBy("Expense"), "expenseLegend");
+  }
+
+  function aggregateBy(type){
+    const agg = {};
+    localState.transactions.forEach(t=>{
+      if(t.type !== type) return;
+      agg[t.category] = (agg[t.category]||0) + Number(t.amount);
+    });
+    return agg;
+  }
+
+  function renderTable(){
+    const tbody = document.querySelector("#txTable tbody");
+    tbody.innerHTML = "";
+    localState.transactions.slice().sort((a,b)=> new Date(b.datetime)-new Date(a.datetime)).forEach(t=>{
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${t.type}</td><td>${t.category}</td><td>${t.amount.toFixed(2)}</td>
+        <td>${new Date(t.datetime).toLocaleString()}</td><td>${escapeHtml(t.note||"")}</td>
+        <td><button onclick="deleteTx(${t.id})" style="background:#e63946">Delete</button></td>`;
+      tbody.appendChild(tr);
+    });
+  }
+
+  function renderSummary(){
+    const inc = Object.values(aggregateBy("Income")).reduce((s,v)=>s+v,0);
+    const exp = Object.values(aggregateBy("Expense")).reduce((s,v)=>s+v,0);
+    document.getElementById("totalIncome").textContent = inc.toFixed(2);
+    document.getElementById("totalExpense").textContent = exp.toFixed(2);
+    document.getElementById("balance").textContent = (inc - exp).toFixed(2);
+    document.getElementById("topIncome").textContent = topKey(aggregateBy("Income")) || "-";
+    document.getElementById("topExpense").textContent = topKey(aggregateBy("Expense")) || "-";
+  }
+
+  function topKey(map){
+    const keys = Object.keys(map);
+    if(!keys.length) return null;
+    return keys.reduce((a,b)=> map[a] > map[b] ? a : b);
+  }
+
+  // Canvas pie chart with external legend
+  function drawPie(canvasId, dataObj, legendId){
+    const canvas = document.getElementById(canvasId);
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    const entries = Object.entries(dataObj);
+    if(entries.length === 0){
+      ctx.fillStyle="#777";
+      ctx.font = "14px sans-serif";
+      ctx.fillText("No data", 10,20);
+      document.getElementById(legendId).innerHTML = "";
+      return;
+    }
+    const total = entries.reduce((s,[,v])=>s+v,0);
+    function color(i){ return `hsl(${(i*70)%360} 70% 55%)`; }
+    const cx = canvas.width/2, cy = canvas.height/2, r = Math.min(cx,cy)-10;
+    let start = -Math.PI/2;
+    entries.forEach(([label,val],i)=>{
+      const slice = (val/total) * Math.PI*2;
+      const end = start + slice;
+      ctx.beginPath();
+      ctx.moveTo(cx,cy);
+      ctx.arc(cx,cy,r,start,end);
+      ctx.closePath();
+      ctx.fillStyle = color(i);
+      ctx.fill();
+      start = end;
+    });
+    // legend outside canvas
+    const legend = document.getElementById(legendId);
+    legend.innerHTML = "";
+    entries.forEach(([label,val],i)=>{
+      const row = document.createElement("div");
+      row.className = "legend-item";
+      const box = document.createElement("div");
+      box.className = "legend-box"; box.style.background = color(i);
+      const text = document.createElement("span");
+      text.textContent = `${label} — ${val.toFixed(2)} (${((val/total)*100).toFixed(1)}%)`;
+      row.appendChild(box); row.appendChild(text); legend.appendChild(row);
+    });
+  }
+
+  // helper
+  function escapeHtml(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+  // ---------- on page load ----------
+  // render defaults
+  renderAll();
+
+  // Expose some functions for inline use
+  window.deleteTx = deleteTx;
+  window.clearLocal = clearLocal;
+
+  // When the document is visible and we have a user, try to fetch state once (in case onSnapshot missed it)
+  async function fetchInitialState(){
+    if(!currentUser) return;
+    const ref = userDocRef(currentUser.uid);
+    try {
+      const snap = await getDoc(ref);
+      if(snap.exists()){
+        const data = snap.data();
+        localState = {
+          categories: data.categories || localState.categories,
+          transactions: data.transactions || [],
+          lastUpdated: data.lastUpdated || Date.now()
+        };
+        renderAll();
+      } else {
+        // save initial localState
+        localState.lastUpdated = Date.now();
+        await saveStateToFirestore(localState);
+      }
+    } catch(e){ console.error("Fetch initial:", e); }
+  }
+
+  // small delay then try fetch after sign-in
+  onAuthStateChanged(auth, user=>{
+    if(user) setTimeout(fetchInitialState, 400);
+  });
+
+</script>
+</body>
+</html>
